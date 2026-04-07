@@ -5,7 +5,8 @@ library(readr)
 library(broom)
 
 #Definir pasta de trabalho 
-setwd("D:/Downloads/dados_raw")
+setwd("C:/Users/lirie/belle/dados_raw")
+save_dir <- ("C:/Users/lirie/belle/")
 
 #Trazer tabelas de interesse para o R
 isolar_exp_sum <- list.files(pattern="*ExperimentSummary.csv") 
@@ -19,7 +20,7 @@ extract_standardized_id <- function(ids) {
   
   for (i in seq_along(ids)) {
     id <- ids[i]
-    id_number <- sub('.*?(\\d{5}).*', '\\1', id, perl = TRUE)
+    id_number <- sub('.?(\\d{5}).', '\\1', id, perl = TRUE)
     
     if (grepl("(?i)\\d{5}$", id)) {
       if (grepl("(?i)^[wW][12]", id)) {
@@ -32,7 +33,7 @@ extract_standardized_id <- function(ids) {
       id_number <- paste0(id_number, "_", tolower(sub("^[wW]([12]).*", "\\1", id, perl = TRUE)))
       standardized_ids <- c(standardized_ids, id_number)
     } else if (grepl("(?i)([wW][12])", id)) {
-      id_number <- paste0(id_number, "_", tolower(sub(".*?([wW][12]).*", "\\1", id, perl = TRUE)))
+      id_number <- paste0(id_number, "_", tolower(sub(".?([wW][12]).", "\\1", id, perl = TRUE)))
       standardized_ids <- c(standardized_ids, id_number)
     } else {
       warning(paste("Sample at position", i, "(", id, ") does not match the expected format. It has not been outputted."))
@@ -120,7 +121,9 @@ valores_percentis <- sapply(bins_isolados, function(df) {
   return(c(p90 = p90_amostra, p95 = p95_amostra))
 })
 corte_p90 <- mean(valores_percentis["p90", ], na.rm = TRUE)
+print(corte_p90)
 corte_p95 <- mean(valores_percentis["p95", ], na.rm = TRUE)
+print(corte_p95)
 p90 <- sapply(bins_isolados, processar_exp, corte_p90)
 concentration_EV_pequenas <- p90["pequenas", ]
 concentration_EV_grandes  <- p90["grandes", ]
@@ -151,7 +154,8 @@ batch_nan <- batch_nan %>%
 #Juntando todos os dados obtidos do nanosight em uma tabela
 tabela_tudo_nanosight <- data.frame(id_sample, concentracao_average, diluicao, concentracao_real, tamanho_mean_mode, EV_pequenas_porcentagem, p90_porcentagem, p95_porcentagem, batch_nan)
 colnames(tabela_tudo_nanosight)[3] <- "diluicao"
-nanosight_sem_duplicatas <- tabela_tudo_nanosight
+duplicatas <- duplicated(tabela_tudo_nanosight[, c("id_sample")], fromLast = TRUE) #a 2a leitura é a correta
+nanosight_sem_duplicatas <- subset(tabela_tudo_nanosight, !duplicatas)
 #Juntar dados do nanosight com informações da amostra
 sample_information <- read.csv("sampleinformation_liriel320_atualizada.csv") #chamando/lendo/importando infos da amostra
 sample_information$id_sample <- paste(sample_information$subjectid, sample_information$wave, sep = "_")
@@ -161,8 +165,7 @@ nanosight_plus_sampleinfo <- unnest(
   nanosight_plus_sampleinfo,
   cols = c("tamanho_mean_average", "tamanho_mode_average")
 )
-##Retirar coluna que nao interessa (bage)
-nanosight_plus_sampleinfo$bage <- NULL
+
 ##Para analise de Levene as colunas de transtornos não podem ser numeros, portanto (F=False T=True)
 nanosight_plus_sampleinfo <- nanosight_plus_sampleinfo %>%
   mutate(
@@ -189,64 +192,205 @@ nanosight_plus_sampleinfo <- nanosight_plus_sampleinfo %>%
     wave == "w1" ~ "t1",
     wave == "w2" ~ "t2"
   ))
-write.csv(nanosight_plus_sampleinfo, "nanosight_plus_sampleinfo_all.csv", row.names = FALSE)
+
+nanosight_plus_sampleinfo <- nanosight_plus_sampleinfo %>%
+  group_by(subjectid) %>%
+  mutate(
+    dep_t1 = first(dcmadep[wave == "t1"], default = NA),
+    dep_t2 = first(dcmadep[wave == "t2"], default = NA),
+    grupo_analise_dep = case_when(
+      is.na(dep_t1) | is.na(dep_t2) ~ "None",
+      Trajetoria == "Control" ~ "Control",
+      dep_t1 == "F" & dep_t2 == "T" ~ "Incident",
+      dep_t1 == "T" & dep_t2 == "T" ~ "Persistent",
+      dep_t1 == "T" & dep_t2 == "F" ~ "Remitted",
+      TRUE ~ NA_character_),
+    gena_t1 = first(dcgena[wave == "t1"], default = NA),
+    gena_t2 = first(dcgena[wave == "t2"], default = NA),
+    grupo_analise_gena = case_when(
+      is.na(gena_t1) | is.na(gena_t2) ~ "None",
+      Trajetoria == "Control" ~ "Control",
+      gena_t1 == "F" & gena_t2 == "T" ~ "Incident",
+      gena_t1 == "T" & gena_t2 == "T" ~ "Persistent",
+      gena_t1 == "T" & gena_t2 == "F" ~ "Remitted",
+      TRUE ~ NA_character_),
+    anyhk_t1 = first(dcanyhk[wave == "t1"], default = NA),
+    anyhk_t2 = first(dcanyhk[wave == "t2"], default = NA),
+    grupo_analise_anyhk = case_when(
+      is.na(anyhk_t1) | is.na(anyhk_t2) ~ "None",
+      Trajetoria == "Control" ~ "Control",
+      anyhk_t1 == "F" & anyhk_t2 == "T" ~ "Incident",
+      anyhk_t1 == "T" & anyhk_t2 == "T" ~ "Persistent",
+      anyhk_t1 == "T" & anyhk_t2 == "F" ~ "Remitted",
+      TRUE ~ NA_character_)
+    ) %>% ungroup()
+  
+  
+write.csv(nanosight_plus_sampleinfo, paste0(save_dir, "nanosight_plus_sampleinfo_all.csv"), row.names = FALSE)
+
+transtorno_traj <- list(
+  list(coluna_trajetoria = "Trajetoria", transtorno = "cross"),
+  list(coluna_trajetoria = "grupo_analise_dep", transtorno = "dep"),
+  list(coluna_trajetoria = "grupo_analise_gena", transtorno = "anx_inc_control"), #n baixo, so incidente vs controle
+  list(coluna_trajetoria = "grupo_analise_gena", transtorno = "anx_inc_control_remit"), #n baixo, so incidente vs controle
+  list(coluna_trajetoria = "grupo_analise_anyhk", transtorno = "adhd_inc_control"), #n baixo, so incidente vs controle
+  list(coluna_trajetoria = "grupo_analise_anyhk", transtorno = "adhd_inc_control_remit") #n baixo, so incidente vs controle
+)
+
+tabela_decisao_modelagem <- data.frame()
+
+for (transtornos in transtorno_traj) {
+
+transtorno <- transtornos$transtorno
+coluna_trajetoria <- transtornos$coluna_trajetoria
+
+nanosight_plus_sampleinfo$coluna_traj <- nanosight_plus_sampleinfo[[coluna_trajetoria]]
+
+nanosight_plus_sampleinfo_transt <- subset(nanosight_plus_sampleinfo, !is.na(coluna_traj)) 
+nanosight_plus_sampleinfo_transt <- subset(nanosight_plus_sampleinfo_transt, coluna_traj != "None") 
+
+if(transtorno == "adhd_inc_control" || transtorno == "anx_inc_control") {
+nanosight_plus_sampleinfo_transt <- subset(nanosight_plus_sampleinfo_transt, coluna_traj %in% c("Control","Incident")) 
+  
+} else if (transtorno == "adhd_inc_control_remit" || transtorno == "anx_inc_control_remit") {
+  nanosight_plus_sampleinfo_transt <- subset(nanosight_plus_sampleinfo_transt, coluna_traj != "Persistent") 
+}
 
 
 #Retirando outliers
-nanosight_plus_sampleinfo$zscore_mean <- scale(nanosight_plus_sampleinfo$tamanho_mean_average)
-nanosight_plus_sampleinfo$zscore_porcentagem <- scale(nanosight_plus_sampleinfo$EV_pequenas_porcentagem)
-nanosight_plus_sampleinfo$zscore_concentracao <- scale(nanosight_plus_sampleinfo$concentracao_real)
-nanosight_plus_sampleinfo$zscore_p90 <- scale(nanosight_plus_sampleinfo$p90_porcentagem)
-nanosight_plus_sampleinfo$zscore_p95 <- scale(nanosight_plus_sampleinfo$p95_porcentagem)
+nanosight_plus_sampleinfo_transt$zscore_mode <- scale(nanosight_plus_sampleinfo_transt$tamanho_mode_average)
+nanosight_plus_sampleinfo_transt$zscore_porcentagem <- scale(nanosight_plus_sampleinfo_transt$EV_pequenas_porcentagem)
+nanosight_plus_sampleinfo_transt$zscore_concentracao <- scale(nanosight_plus_sampleinfo_transt$concentracao_real)
+nanosight_plus_sampleinfo_transt$zscore_p90 <- scale(nanosight_plus_sampleinfo_transt$p90_porcentagem)
+nanosight_plus_sampleinfo_transt$zscore_p95 <- scale(nanosight_plus_sampleinfo_transt$p95_porcentagem)
 
 
-nanosight_plus_sampleinfo_sem_outliers_mean <- nanosight_plus_sampleinfo[nanosight_plus_sampleinfo$zscore_mean >= -3.0 & nanosight_plus_sampleinfo$zscore_mean <= 3.0, ]
-nanosight_plus_sampleinfo_sem_outliers_porcentagem <- nanosight_plus_sampleinfo[nanosight_plus_sampleinfo$zscore_porcentagem >= -3.0 & nanosight_plus_sampleinfo$zscore_porcentagem <= 3.0, ]
-nanosight_plus_sampleinfo_sem_outliers_concentracao <- nanosight_plus_sampleinfo[nanosight_plus_sampleinfo$zscore_concentracao >= -3.0 & nanosight_plus_sampleinfo$zscore_concentracao <= 3.0, ]
-nanosight_plus_sampleinfo_sem_outliers_p90 <- nanosight_plus_sampleinfo[nanosight_plus_sampleinfo$zscore_p90 >= -3.0 & nanosight_plus_sampleinfo$zscore_p90 <= 3.0, ]
-nanosight_plus_sampleinfo_sem_outliers_p95 <- nanosight_plus_sampleinfo[nanosight_plus_sampleinfo$zscore_p95 >= -3.0 & nanosight_plus_sampleinfo$zscore_p95 <= 3.0, ]
+nanosight_plus_sampleinfo_sem_outliers_mode <- nanosight_plus_sampleinfo_transt[nanosight_plus_sampleinfo_transt$zscore_mode >= -3.0 & nanosight_plus_sampleinfo_transt$zscore_mode <= 3.0, ]
+nanosight_plus_sampleinfo_sem_outliers_porcentagem <- nanosight_plus_sampleinfo_transt[nanosight_plus_sampleinfo_transt$zscore_porcentagem >= -3.0 & nanosight_plus_sampleinfo_transt$zscore_porcentagem <= 3.0, ]
+nanosight_plus_sampleinfo_sem_outliers_concentracao <- nanosight_plus_sampleinfo_transt[nanosight_plus_sampleinfo_transt$zscore_concentracao >= -3.0 & nanosight_plus_sampleinfo_transt$zscore_concentracao <= 3.0, ]
+nanosight_plus_sampleinfo_sem_outliers_p90 <- nanosight_plus_sampleinfo_transt[nanosight_plus_sampleinfo_transt$zscore_p90 >= -3.0 & nanosight_plus_sampleinfo_transt$zscore_p90 <= 3.0, ]
+nanosight_plus_sampleinfo_sem_outliers_p95 <- nanosight_plus_sampleinfo_transt[nanosight_plus_sampleinfo_transt$zscore_p95 >= -3.0 & nanosight_plus_sampleinfo_transt$zscore_p95 <= 3.0, ]
 
 
+nanosight_plus_sampleinfo_sem_outliers_mode_concentracao <- semi_join(nanosight_plus_sampleinfo_sem_outliers_mode, nanosight_plus_sampleinfo_sem_outliers_concentracao, by = "id_sample")
 
-nanosight_plus_sampleinfo_sem_outliers_mean_concentracao <- semi_join(nanosight_plus_sampleinfo_sem_outliers_mean, nanosight_plus_sampleinfo_sem_outliers_concentracao, by = "id_sample")
+nanosight_intersect_ev_pequena <- semi_join(nanosight_plus_sampleinfo_sem_outliers_mode_concentracao, nanosight_plus_sampleinfo_sem_outliers_porcentagem, by = ("id_sample"))
+nanosight_intersect_p90 <-  semi_join(nanosight_plus_sampleinfo_sem_outliers_mode_concentracao, nanosight_plus_sampleinfo_sem_outliers_p90, by = ("id_sample"))
+nanosight_intersect_p95 <-  semi_join(nanosight_plus_sampleinfo_sem_outliers_mode_concentracao, nanosight_plus_sampleinfo_sem_outliers_p95, by = ("id_sample"))
 
+write.csv(nanosight_intersect_ev_pequena, paste0(save_dir, "nanosight_intersect_ev_pequena_", transtorno, ".csv"), row.names = FALSE, quote = FALSE)
+write.csv(nanosight_intersect_p90, paste0(save_dir, "nanosight_intersect_p90_", transtorno, ".csv"), row.names = FALSE, quote = FALSE)
+write.csv(nanosight_intersect_p95, paste0(save_dir, "nanosight_intersect_p95_", transtorno, ".csv"), row.names = FALSE, quote = FALSE)
 
-nanosight_intersect_ev_pequena <- semi_join(nanosight_plus_sampleinfo_sem_outliers_mean_concentracao, nanosight_plus_sampleinfo_sem_outliers_porcentagem, by = ("id_sample"))
-nanosight_intersect_p90 <-  semi_join(nanosight_plus_sampleinfo_sem_outliers_mean_concentracao, nanosight_plus_sampleinfo_sem_outliers_p90, by = ("id_sample"))
-nanosight_intersect_p95 <-  semi_join(nanosight_plus_sampleinfo_sem_outliers_mean_concentracao, nanosight_plus_sampleinfo_sem_outliers_p95, by = ("id_sample"))
+# --- Definir quais modelos serao rodados e quais sao redundantes ---
+# 1. Coleta as IDs de cada grupo
+ids_90  <- nanosight_intersect_p90$id_sample
+ids_95  <- nanosight_intersect_p95$id_sample
+ids_peq <- nanosight_intersect_ev_pequena$id_sample
 
-write.csv(nanosight_intersect_ev_pequena, "nanosight_intersect_ev_pequena.csv", row.names = FALSE, quote = FALSE)
+# 2. Une todas as IDs únicas que aparecem em qualquer um dos 3 arquivos
+todos_ids_do_transtorno <- unique(c(ids_90, ids_95, ids_peq))
+
+# 3. Identifica quem NÃO está presente nos três simultaneamente
+ids_conflito <- todos_ids_do_transtorno[!(todos_ids_do_transtorno %in% ids_90 & 
+                                            todos_ids_do_transtorno %in% ids_95 & 
+                                            todos_ids_do_transtorno %in% ids_peq)]
+
+# 4. Cria uma descrição detalhada para cada indivíduo problemático
+if (length(ids_conflito) > 0) {
+  detalhes <- sapply(ids_conflito, function(id) {
+    faltas <- c()
+    if (!(id %in% ids_90))  faltas <- c(faltas, "P90")
+    if (!(id %in% ids_95))  faltas <- c(faltas, "P95")
+    if (!(id %in% ids_peq)) faltas <- c(faltas, "Pequena")
+    paste0(id, " (Falta em: ", paste(faltas, collapse = ", "), ")")
+  })
+  quem_e_diferente <- paste(detalhes, collapse = " | ")
+} else {
+  quem_e_diferente <- "Nenhum (Grupos Idênticos)"
+}
+
+# --- LÓGICA DE DECISÃO (IGUAL ANTERIOR) ---
+comp_90_95  <- isTRUE(all.equal(ids_90, ids_95))
+comp_90_peq <- isTRUE(all.equal(ids_90, ids_peq))
+comp_95_peq <- isTRUE(all.equal(ids_95, ids_peq))
+
+if (comp_90_95 & comp_90_peq) {
+  decisao <- "ÚNICO"; arquivos_reportar <- "P90 (vale para todos)"
+} else if (comp_90_95 & !comp_90_peq) {
+  decisao <- "DUPLO"; arquivos_reportar <- "P90 (vale para P95); Pequena"
+} else if (!comp_90_95 & comp_95_peq) {
+  decisao <- "DUPLO"; arquivos_reportar <- "P90; P95 (vale para Pequena)"
+} else if (!comp_90_95 & !comp_90_peq & !comp_95_peq) {
+  decisao <- "TRIPLO"; arquivos_reportar <- "P90; P95; Pequena"
+} else {
+  decisao <- "DUPLO (P90=Peq)"; arquivos_reportar <- "P90 (vale para Pequena); P95"
+}
+
+# --- ARMAZENANDO NA TABELA ---
+linha_decisao <- data.frame(
+  Transtorno = transtorno,
+  N_P90 = length(ids_90),
+  N_P95 = length(ids_95),
+  N_Pequena = length(ids_peq),
+  Decisao_Relatorio_Size_Conc = decisao,
+  Arquivos_para_Modelar = arquivos_reportar,
+  Individuos_Diferentes = quem_e_diferente  # NOVA COLUNA
+)
+tabela_decisao_modelagem <- rbind(tabela_decisao_modelagem, linha_decisao)
+write.csv(tabela_decisao_modelagem, "tabela_decisao_modelagem.csv", row.names = F, quote = F)
+#Infos adicionais de numeros de amostras, transtornos, etc
+
+##Outliers
+nanosight_outliers_ev_pequena <- anti_join(nanosight_plus_sampleinfo, nanosight_intersect_ev_pequena, by = "id_sample")
+nanosight_outliers_p95 <- anti_join(nanosight_plus_sampleinfo, nanosight_intersect_p90, by = "id_sample")
+nanosight_outliers_p90 <- anti_join(nanosight_plus_sampleinfo, nanosight_intersect_p95, by = "id_sample")
+print(transtorno)
+print("outliers: pequena, p90, p95")
+print(nanosight_outliers_ev_pequena)
+print(nanosight_outliers_p90)
+print(nanosight_outliers_p95)
+##Amostras sem pares
+linhas_sem_pares_intersect_ev_pequena <- !duplicated(nanosight_intersect_ev_pequena$subjectid) & !duplicated(nanosight_intersect_ev_pequena$subjectid, fromLast = TRUE)
+linhas_sem_pares_intersect_p90 <- !duplicated(nanosight_intersect_p90$subjectid) & !duplicated(nanosight_intersect_p90$subjectid, fromLast = TRUE)
+linhas_sem_pares_intersect_p95 <- !duplicated(nanosight_intersect_p95$subjectid) & !duplicated(nanosight_intersect_p95$subjectid, fromLast = TRUE)
+nanosight_sem_pares_intersect_ev_pequena <- nanosight_intersect_ev_pequena[linhas_sem_pares_intersect_ev_pequena, ] 
+nanosight_sem_pares_intersect_p90 <- nanosight_intersect_p90[linhas_sem_pares_intersect_p90, ] 
+nanosight_sem_pares_intersect_p95 <- nanosight_intersect_p95[linhas_sem_pares_intersect_p95, ] 
+print(transtorno)
+print("sem pares: pequena, p90, p95")
+print(nanosight_sem_pares_intersect_ev_pequena)
+print(nanosight_sem_pares_intersect_p90)
+print(nanosight_sem_pares_intersect_p95)
+
+##Amostras com pares
+nanosight_intersect_pares_ev_pequena <- anti_join (nanosight_intersect_ev_pequena, nanosight_sem_pares_intersect_ev_pequena, by = "id_sample")
+nanosight_intersect_pares_p90 <- anti_join (nanosight_intersect_p90, nanosight_sem_pares_intersect_p90, by = "id_sample")
+nanosight_intersect_pares_p95 <- anti_join (nanosight_intersect_p95, nanosight_sem_pares_intersect_p95, by = "id_sample")
+print(transtorno)
+print("pares: pequena, p90, p95")
+print(nanosight_intersect_pares_ev_pequena)
+print(nanosight_intersect_pares_p90)
+print(nanosight_intersect_pares_p95)
+}
+
+#Infos adicionais gerais (com outliers) de numeros de amostras, transtornos, etc
 
 ##Tabela só com w1 e só w2
 nanosight_w1 <- subset(nanosight_plus_sampleinfo, wave == "t1")
 nanosight_w2 <- subset(nanosight_plus_sampleinfo, wave == "t2")
-nanosight_w1_semoutliers_mean <- subset(nanosight_plus_sampleinfo_sem_outliers_mean, wave == "t1")
-nanosight_w2_semoutliers_mean <- subset(nanosight_plus_sampleinfo_sem_outliers_mean, wave == "t2")
-nanosight_intersect_w1_ev_pequena <- subset(nanosight_intersect_ev_pequena, wave == "t1")
-nanosight_intersect_w2_ev_pequena <- subset(nanosight_intersect_ev_pequena, wave == "t2")
-nanosight_intersect_w1_p90 <- subset(nanosight_intersect_p90, wave == "t1")
-nanosight_intersect_w2_p90 <- subset(nanosight_intersect_p90, wave == "t2")
-nanosight_intersect_w1_p95 <- subset(nanosight_intersect_p95, wave == "t1")
-nanosight_intersect_w2_p95 <- subset(nanosight_intersect_p95, wave == "t2")
-
-#Infos adicionais de numeros de amostras, transtornos, etc
 
 ##Amostras sem análise no Nanosight ou sem correspondencia no sample info
 sample_info_sem_nanosight <- anti_join(sample_information, nanosight_sem_duplicatas, by="id_sample")
 sem_correspondencia <- anti_join(nanosight_sem_duplicatas, sample_information, by = "id_sample")
 
-##Outliers
-nanosight_outliers <- anti_join(nanosight_plus_sampleinfo, nanosight_intersect_ev_pequena, by = "id_sample")
 
 ##Amostras sem pares
 linhas_sem_pares <- !duplicated(nanosight_plus_sampleinfo$subjectid) & !duplicated(nanosight_plus_sampleinfo$subjectid, fromLast = TRUE)
 nanosight_sem_pares <- nanosight_plus_sampleinfo[linhas_sem_pares, ] #perde 7
-linhas_sem_pares_intersect <- !duplicated(nanosight_intersect_ev_pequena$subjectid) & !duplicated(nanosight_intersect_ev_pequena$subjectid, fromLast = TRUE)
-nanosight_sem_pares_intersect <- nanosight_intersect_ev_pequena[linhas_sem_pares_intersect, ] #perde 7
 
 ##Amostras com pares
 nanosight_plus_sampleinfo_pares <- anti_join(nanosight_plus_sampleinfo, nanosight_sem_pares, by = "id_sample")
-nanosight_intersect_pares <- anti_join (nanosight_intersect_ev_pequena, nanosight_sem_pares_intersect, by = "id_sample")
 
 
 ##Contagem de indivíduos com diferentes transtornos:
@@ -259,46 +403,8 @@ combinacoes_w1_frequencias <- variaveis_w1 %>%
   summarise(Frequencia = n(), .groups = "drop")
 ###w2
 variaveis_w2 <- nanosight_w2 %>% 
-  select(dcany, dcmadep, dcanyanx, dcgena, dcanyhk, dcpsych, dcptsd)
+ select(dcany, dcmadep, dcanyanx, dcgena, dcanyhk, dcpsych, dcptsd)
 variaveis_w2_combinacao <- as.data.frame(rowSums(variaveis_w2 == "T"))
 combinacoes_w2_frequencias <- variaveis_w2 %>%
   group_by(across(everything())) %>%
   summarise(Frequencia = n(), .groups = "drop")
-###Incident (pq)
-nanosight_intersect_Incident <- subset(nanosight_intersect_ev_pequena, Trajetoria == "Incident")
-variaveis_incident <- nanosight_intersect_ev_pequena %>% 
-  select(dcany, dcmadep, dcanyanx, dcgena, dcanyhk, dcpsych, dcptsd)
-variaveis_incident_combinacao <- as.data.frame(rowSums(variaveis_incident == "T"))
-combinacoes_incident_frequencias <- variaveis_incident %>%
-  group_by(across(everything())) %>%
-  summarise(Frequencia = n(), .groups = "drop")
-
-#Tabelas adicionais
-
-##Tabela de cada batch_nan (n tem mais a nanosight_conc_nan, tira isso ou nao?)
-#nanosight_batch_b <- subset(nanosight_intersect_conc_nan, batch_nan == "B")
-#nanosight_batch_i1 <- subset(nanosight_intersect_conc_nan, batch_nan == "I1")
-#nanosight_batch_i2 <- subset(nanosight_intersect_conc_nan, batch_nan == "I2")
-#nanosight_batch_j <- subset(nanosight_intersect_conc_nan, batch_nan == "J")
-#nanosight_batch_b_w1 <- subset(nanosight_batch_b, wave == "t1")
-#nanosight_batch_b_w2 <- subset(nanosight_batch_b, wave == "t2")
-#nanosight_batch_i1_w1 <- subset(nanosight_batch_i1, wave == "t1")
-#nanosight_batch_i1_w2 <- subset(nanosight_batch_i1, wave == "t2")
-#nanosight_batch_i2_w1 <- subset(nanosight_batch_i2, wave == "t1")
-#nanosight_batch_i2_w2 <- subset(nanosight_batch_i2, wave == "t2")
-#nanosight_batch_j_w1 <- subset(nanosight_batch_j, wave == "t1")
-#nanosight_batch_j_w2 <- subset(nanosight_batch_j, wave == "t2")
-
-##Tabela só com grupo Persistente
-#nanosight_intersect_conc_nan_persistence <- subset(nanosight_intersect_conc_nan, Trajetoria == "Persistent")
-nanosight_intersect_persistence <- subset(nanosight_intersect_ev_pequena, Trajetoria == "Persistent")
-
-##Tabela sem o batch_nan_i1
-nanosight_batch_b_i2_j <- subset(nanosight_plus_sampleinfo, batch_nan != "I1")
-
-##tabela considerando o batch I como um todo
-nanosight_batch_i <- subset(nanosight_plus_sampleinfo, batch_nan %in% c("I1", "I2"))
-
-
-
-
