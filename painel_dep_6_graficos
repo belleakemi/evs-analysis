@@ -564,17 +564,66 @@ formatar_p <- function(p) {
          paste0(prefixo, " = ", formatC(p, format = "f", digits = 3)))
 }
 
-tema <- theme_minimal(base_size = 11) +
+tema <- theme_minimal(base_size = 12) +
   theme(panel.grid.major.x = element_blank(),
         panel.grid.minor = element_blank(),
         panel.grid.major.y = element_line(color = "grey90", linewidth = 0.35),
         axis.line = element_line(color = "grey25", linewidth = 0.45),
         axis.ticks = element_line(color = "grey25"),
-        axis.text = element_text(color = "black"),
-        plot.title = element_text(face = "bold", margin = margin(b = 12)),
+        axis.text    = element_text(size = 12, color = "black"),
+        plot.title   = element_text(size = 14, face = "bold",
+                                    margin = margin(b = 12)),
         axis.title.y = element_text(margin = margin(r = 8)),
         legend.title = element_blank(), legend.position = "bottom",
         plot.margin = margin(8, 12, 6, 6))
+
+# Divide cada IC em trechos exclusivos e compartilhados, SEM mudar x/y.
+# O trecho compartilhado usa duas espessuras concentricas e transparencia:
+# a linha de fundo continua visivel nas bordas da linha mais fina.
+segmentar_ic <- function(df, par, largura_cap = 0.04) {
+  saida <- list()
+  adicionar <- function(i, x, xend, y, yend, sobreposto) {
+    fundo <- as.character(df$trajectory[i]) == par[1]
+    saida[[length(saida) + 1L]] <<- data.frame(
+      trajectory = as.character(df$trajectory[i]),
+      x = x, xend = xend, y = y, yend = yend,
+      opacidade = if (sobreposto) { if (fundo) 0.55 else 0.70 } else 1,
+      espessura = if (sobreposto) { if (fundo) 1.10 else 0.45 } else 0.60,
+      ordem = if (sobreposto) { if (fundo) 1 else 2 } else 0
+    )
+  }
+  for (i in seq_len(nrow(df))) {
+    outros <- which(df$wave == df$wave[i] &
+                      as.character(df$trajectory) != as.character(df$trajectory[i]) &
+                      df$x == df$x[i])
+    if (length(outros) > 1L) stop("Mais de um IC por grupo/tempo.")
+    cortes <- c(df$lower[i], df$upper[i])
+    if (length(outros) == 1L) {
+      j <- outros[1]
+      limites_outro <- c(df$lower[j], df$upper[j])
+      cortes <- c(cortes, limites_outro[limites_outro > df$lower[i] &
+                                       limites_outro < df$upper[i]])
+    }
+    cortes <- sort(unique(cortes))
+    if (length(cortes) > 1L) {
+      for (k in seq_len(length(cortes) - 1L)) {
+        meio <- (cortes[k] + cortes[k + 1L]) / 2
+        sobreposto <- length(outros) == 1L &&
+          meio >= df$lower[outros[1]] && meio <= df$upper[outros[1]]
+        adicionar(i, df$x[i], df$x[i], cortes[k], cortes[k + 1L], sobreposto)
+      }
+    }
+    # Transparencia nas pontas horizontais apenas se coincidirem.
+    for (limite in c(df$lower[i], df$upper[i])) {
+      coincidente <- length(outros) == 1L &&
+        limite %in% c(df$lower[outros[1]], df$upper[outros[1]])
+      adicionar(i, df$x[i] - largura_cap / 2, df$x[i] + largura_cap / 2,
+                limite, limite, coincidente)
+    }
+  }
+  res <- do.call(rbind, saida)
+  res[order(res$ordem), , drop = FALSE]
+}
 
 painel <- function(caracteristica, par, testes) {
   # Escala y comum entre as tres linhas para a mesma caracteristica.
@@ -589,10 +638,24 @@ painel <- function(caracteristica, par, testes) {
   base <- max(0, min(todos$lower) - 0.08 * amplitude)
   limite <- topo + 0.26 * amplitude
   # Deslocamentos explicitos alinham pontos, ICs e linhas tracejadas.
-  deslocamento <- 0.07
+  # Sem afastamento: ambos os grupos ficam exatamente em t1 e t2.
+  deslocamento <- 0.0
   df$trajectory <- factor(df$trajectory, levels = par)
   df$x <- match(df$wave, wave_order) +
     ifelse(df$trajectory == par[1], -deslocamento, deslocamento)
+  ic_segmentos <- segmentar_ic(df, par)
+  # Transparencia somente quando o centro do ponto fica sobre o IC
+  # do OUTRO grupo, no mesmo tempo e na mesma coordenada horizontal.
+  # Nao alterar estimativas, limites dos ICs ou deslocamento.
+  alpha_ponto_sobreposto <- 0.50  # menor = mais transparente; 1 = opaco
+  df$ponto_sobre_ic <- vapply(seq_len(nrow(df)), function(i) {
+    outros <- which(df$wave == df$wave[i] &
+                      as.character(df$trajectory) != as.character(df$trajectory[i]) &
+                      df$x == df$x[i])
+    any(df$estimate[i] >= df$lower[outros] &
+          df$estimate[i] <= df$upper[outros])
+  }, logical(1))
+  df$alpha_ponto <- ifelse(df$ponto_sobre_ic, alpha_ponto_sobreposto, 1)
   anot <- testes[testes$characteristic == caracteristica, ]
   anot$x <- ifelse(anot$context == "within_time",
                    match(anot$wave, wave_order), 1.5)
@@ -600,26 +663,43 @@ painel <- function(caracteristica, par, testes) {
   anot$label <- ifelse(anot$context == "not_performed",
                        "Group post hoc not performed",
                        ifelse(anot$context == "averaged_over_time",
-                              paste0("Averaged over time\n", formatar_p(anot$p_adjusted)),
+                              paste0(formatar_p(anot$p_adjusted), "*"),
                               formatar_p(anot$p_adjusted)))
   barras <- anot[anot$context == "within_time", , drop = FALSE]
   tit <- switch(caracteristica, size = "A. EV size",
-                conc = "B. EV concentration", perc = "C. Small EVs")
+                conc = "B. EV concentration", perc = "C. % Small EVs")
   eixo <- switch(caracteristica, size = "Estimated EV size (nm)",
                  conc = expression("Estimated concentration (" * 10^10 * " particles/mL)"),
-                 perc = "Estimated small EVs (%)")
+                 perc = "Estimated % of small EVs")
   ggplot(df, aes(x, estimate, group = trajectory,
                  color = trajectory, fill = trajectory, shape = trajectory)) +
     geom_line(linewidth = 0.75, alpha = 0.70, linetype = "dashed") +
-    geom_errorbar(aes(ymin = lower, ymax = upper),
-                  width = 0.065, linewidth = 0.65) +
-    geom_point(size = 3.8, stroke = 0.8) +
+    geom_segment(
+      data = ic_segmentos, inherit.aes = FALSE,
+      aes(x = x, xend = xend, y = y, yend = yend,
+          color = trajectory, alpha = opacidade, linewidth = espessura),
+      lineend = "butt", show.legend = FALSE
+    ) +
+    scale_alpha_identity() +
+    scale_linewidth_identity() +
+    geom_point(aes(alpha = alpha_ponto),
+               size = 3.8, stroke = 0.8, show.legend = FALSE) +
     geom_segment(data = barras, inherit.aes = FALSE,
                  aes(x = x - deslocamento, xend = x + deslocamento,
                      y = y, yend = y), linewidth = 0.45) +
-    geom_text(data = anot, inherit.aes = FALSE,
-              aes(x = x, y = y + 0.055 * amplitude, label = label),
-              size = 3.1, vjust = 0) +
+    geom_text(
+      data = anot,
+      inherit.aes = FALSE,
+      aes(
+        x = Inf,
+        y = Inf,
+        label = label
+      ),
+      hjust = 1.10,
+      vjust = 1.5,
+      size = 4,
+      color = "black"
+    ) +
     # Manter as quatro trajetorias disponiveis para a unica legenda final.
     scale_color_manual(values = cores, limits = names(cores), drop = FALSE) +
     scale_fill_manual(values = cores, limits = names(cores), drop = FALSE) +
@@ -638,7 +718,7 @@ painel <- function(caracteristica, par, testes) {
 # A legenda usa os mesmos vetores cores/formas, sem depender de quais
 # trajetorias estao presentes no ultimo grafico.
 grafico_sem_legenda <- function(caracteristica, par, testes, letra) {
-  nome <- if (caracteristica == "conc") "EV concentration" else "Small EVs"
+  nome <- if (caracteristica == "conc") "EV concentration" else "% Small EVs"
   painel(caracteristica, par, testes) +
     labs(title = paste0(letra, ". ", nome)) +
     guides(color = "none", fill = "none", shape = "none") +
@@ -646,16 +726,37 @@ grafico_sem_legenda <- function(caracteristica, par, testes, letra) {
 }
 
 faixa_comparacao <- function(titulo) {
-  wrap_elements(full = grid::textGrob(
-    titulo, x = 0.5, y = 0.5,
-    gp = grid::gpar(fontsize = 12.5, fontface = "bold")
-  ))
+  
+  texto <- grid::textGrob(
+    titulo,
+    x = 0.5, y = 0.5,
+    gp = grid::gpar(
+      fontsize = 14,
+      fontface = "bold",
+      col = "black"
+    )
+  )
+  
+  fundo <- grid::roundrectGrob(
+    x = 0.5, y = 0.5,
+    width  = grid::grobWidth(texto) + grid::unit(8, "mm"),
+    height = grid::grobHeight(texto) + grid::unit(4, "mm"),
+    r = grid::unit(1.5, "mm"),
+    gp = grid::gpar(
+      fill = grDevices::adjustcolor("#D9D9D9", alpha.f = 0.60),
+      col = NA
+    )
+  )
+  
+  patchwork::wrap_elements(
+    full = grid::grobTree(fundo, texto)
+  )
 }
 
 legenda_quatro_trajetorias <- function() {
   ordem <- c("Control", "Incident", "Persistent", "Remitted")
   textos <- lapply(ordem, function(nm) {
-    grid::textGrob(nm, just = "left", gp = grid::gpar(fontsize = 10))
+    grid::textGrob(nm, just = "left", gp = grid::gpar(fontsize = 12))
   })
   # Medidas reais dos textos para centralizar o conjunto completo.
   larguras <- lapply(textos, function(g) {
@@ -700,17 +801,22 @@ figure_final <- wrap_plots(
   heights = c(0.12, 1, 0.12, 1, 0.12, 1, 0.16),
   guides = "keep"
 ) + plot_annotation(
-  title = "Model-estimated extracellular vesicle characteristics",
+  title = "Summary of the results",
   caption = paste(
     "Tukey post hoc tests",
     "Points: estimated marginal means; bars: pointwise 95% CIs.",
-    "Averaged over time = marginal group contrast",
+    "* marginal groups contrast.",
     sep = "\n"
   ),
   theme = theme(
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5,
-                             margin = margin(b = 12)),
-    plot.caption = element_text(size = 9, hjust = 0, margin = margin(t = 10))
+    plot.title = element_text(
+      face = "bold", size = 17, hjust = 0.5,
+      margin = margin(b = 12)
+    ),
+    plot.caption = element_text(
+      size = 11, hjust = 0,
+      margin = margin(t = 10)
+    )
   )
 )
 print(figure_final)
@@ -730,4 +836,3 @@ cat("\nGraficos e tabelas salvos em:", normalizePath(saida), "\n")
 
 
 })
-
