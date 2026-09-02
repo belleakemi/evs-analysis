@@ -702,9 +702,9 @@ figure_final <- wrap_plots(
 ) + plot_annotation(
   title = "Model-estimated extracellular vesicle characteristics",
   caption = paste(
+    "Tukey post hoc tests",
     "Points: estimated marginal means; bars: pointwise 95% CIs.",
-    "P values are copied from the original Tukey contrasts without recalculation.",
-    "Averaged over time = marginal group contrast, not a separate test at each timepoint.",
+    "Averaged over time = marginal group contrast",
     sep = "\n"
   ),
   theme = theme(
@@ -730,3 +730,4 @@ cat("\nGraficos e tabelas salvos em:", normalizePath(saida), "\n")
 
 
 })
+
